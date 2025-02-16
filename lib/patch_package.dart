@@ -2,6 +2,7 @@
 
 import 'dart:io';
 
+import 'dart:convert';
 import 'package:patch_package/app_log.dart';
 import 'package:patch_package/logger.dart';
 import 'package:path/path.dart' as path;
@@ -73,10 +74,13 @@ class FlutterPatcher {
 
       // Running diff command to generate the patch
       logger.log('Generating patch file using diff...');
-      final result =
-          await Process.run('diff', ['-ruN', tempDirPath, currentPackagePath]);
+      final result = await Process.run('diff', ['-ruN', tempDirPath, currentPackagePath]);
       if (result.stdout.toString().isNotEmpty) {
-        await patchFile.writeAsString(result.stdout);
+        // Fix the paths in the diff output
+        final fixedDiff = result.stdout.toString().replaceAll(
+            RegExp(r'^(---|\+\+\+) (\S+)', multiLine: true),
+            (match) => '${match[1]} ${match[2].replaceFirst(tempDirPath, 'a').replaceFirst(currentPackagePath, 'b')}');
+        await patchFile.writeAsString(fixedDiff);
         logger.log('Patch created at $patchFilePath');
       } else {
         logger.log('No changes detected for $packageName, no patch created.');
@@ -240,14 +244,21 @@ void applyPatches(LoggerInterface logger) async {
       }
 
       logger.log(
-          'Applying patch for $packageName located at ${entity.path} to $packagePath');
-      final patchResult = await Process.run(
-          'patch', ['-d', packagePath, '-p1', '-i', entity.path]);
-      if (patchResult.exitCode == 0) {
+          'Applying patch for $packageName located at ${entity.isAbsolute} to $packagePath');
+      final patchProcess = await Process.start(
+          'patch', ['-p1', '-d', packagePath]);
+
+      // Write the patch file content to the process's stdin
+      final patchFile = File(entity.path);
+      await patchFile.openRead().pipe(patchProcess.stdin);
+
+      final patchResult = await patchProcess.exitCode;
+      if (patchResult == 0) {
         logger.log('Patch applied successfully for $packageName.');
       } else {
+        final stderr = await patchProcess.stderr.transform(utf8.decoder).join();
         logger.log(
-            'Failed to apply patch for $packageName. Error: ${patchResult.stderr}');
+            'Failed to apply patch for $packageName. Error: $stderr');
       }
     } else {
       logger.log('No valid patch files found in patches directory.');
